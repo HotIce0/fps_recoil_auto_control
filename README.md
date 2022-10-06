@@ -10,33 +10,40 @@
 2. Add `modules-load=dwc2` to the end of /boot/cmdline.txt
 3. If you have not already enabled ssh then create a empty file called `ssh` in /boot
 4. Add `libcomposite` to /etc/modules
-5. reboot you pi
+5. reboot your pi
 6. execute script `scripts/usbhid_dev_install.sh`
 
-### 2. build
+### 2. resolve problem of pi4b, usb inttrupt transfer slow
+1. add `usbhid.mousepoll=0` ot `/boot/cmdline.txt`
+2. reboot your pi
+
+### 3. modify `s_mouse` and `s_kbd` in input.c for your mouse and keyboard
+1. 
+    > modify the `struct hid_report_desc`
+
+### 4. build
 1. install dependencies 
-> sudo apt install libudev-dev libmtdev-dev libevdev-dev libwacom-dev libgtk-3-dev
+    > sudo apt install libudev-dev libhidapi-dev
 
 # Working principle
-1. read mouse, keyboard input by /dev/input/eventX
+1. read mouse, keyboard input by hidapi (use libusb backend)
 2. modify input data
-3. send to usb hid device (mouse and keyboard)
-> you need to disable the mouse and keyboard input, To avoid the mouse and keyboard act on linux input system.
+    > ref: https://github.com/HotIce0/HIDDeviceDataDynamicModification
+3. send hid report via usb hid device (mouse and keyboard compsite device)
+    > usb hid device report format
+    > 1. mouse
+    > ```c
+    > // PVID=046D:C092 G102 LIGHTSYNC Gaming Mouse
+    > // {00 00}          {05 00} {00 00} {00}
+    > // btn(bit map)     x       y       wheel
+    > ```
+    > 2. keyboard
+    > ```c
+    > // PVID=0951:16D2 HyperX Alloy FPS Pro Mechanical Gaming Keyboard
+    > // {00}  {00}  {05 00 00 00 00 00}
+    > // CTRL  LED   KEYCODE(6 key)
+    > ```
 
-> Diable mouse, keyboard input: ref https://lxadm.com/Disable_/_enable_keyboard_and_mouse_in_Linux
-
-# hid report format
-1. mouse
-```c
-// PVID=046D:C092 G102 LIGHTSYNC Gaming Mouse
-// {00 00}          {05 00} {00 00} {00}
-// btn(bit map)     x       y       wheel
-```
-2. keyboard
-```c
-// PVID=0951:16D2 HyperX Alloy FPS Pro Mechanical Gaming Keyboard
-// {00}  {00}  {05 00 00 00 00 00}
-// CTRL  LED   KEYCODE(6 key)
-```
-
-# ref: https://github.com/HotIce0/HIDDeviceDataDynamicModification
+# TODO
+1. support auto fill input device report descriptor, when hidapi support get report descriptor.
+2. support device hotplug callback (wait hidapi support)

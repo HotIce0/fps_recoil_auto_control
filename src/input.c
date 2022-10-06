@@ -1,79 +1,222 @@
-#include <stdio.h>
-#include <errno.h>
-#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+#include <hidapi.h>
 
-#include <sys/types.h> /* open */
-#include <sys/stat.h> /* open */
-#include <fcntl.h> /* open */
-#include <unistd.h> /* close */
-
+#include "log.h"
+#include "hid.h"
 #include "input.h"
 
-#define SEAT_ID "seat0"
+#define IS_EXPECT_DEV(_info, _input) \
+    (((_info)->vendor_id == (_input)->vid) && \
+     ((_info)->product_id == (_input)->pid) && \
+     ((_info)->interface_number == (_input)->interface_number))
 
-static int open_restricted(const char *path, int flags, void *user_data)
-{
-    int fd = open(path, flags);
-    printf("open_path=%s\n", path);
-    return fd < 0 ? -errno : fd;
-}
+typedef struct input_dev {
+    hid_device *hidapi;
 
-static void close_restricted(int fd, void *user_data)
-{
-    close(fd);
-}
+    hid_dev dev;
+    uint16_t vid;
+    uint16_t pid;
+    int interface_number;
+} input_dev;
 
-static const struct libinput_interface s_interface = {
-    .open_restricted = open_restricted,
-    .close_restricted = close_restricted,
+input_event_cb s_cb = NULL;
+void *s_user_data = NULL;
+
+static input_dev s_mouse = {
+    .hidapi = NULL,
+    .vid = 0x046d,
+    .pid = 0xc539,
+    .interface_number = 1,
+    .dev = {
+        .report_length = 9,
+        .type = HID_DEV_MOUSE,
+        .mouse = {
+            .btn = {
+                .physical_minimum = 1,
+                .physical_maximum = 16,
+                .logical_minimum = 0,
+                .logical_maximum = 1,
+                .size = 1,
+                .count = 16,
+                .report_buffer_offset = 1
+            },
+            .orien = {
+                .physical_minimum = 0,
+                .physical_maximum = 0,
+                .logical_minimum = -32767,
+                .logical_maximum = 32767,
+                .size = 16,
+                .count = 2,
+                .report_buffer_offset = 3
+            },
+            .wheel = {
+                .physical_minimum = 0,
+                .physical_maximum = 0,
+                .logical_minimum = -127,
+                .logical_maximum = 127,
+                .size = 8,
+                .count = 1,
+                .report_buffer_offset = 7
+            }
+        }
+    }
 };
 
-int input_event_handle_loop(input_event_handlers handlers)
-{
-    struct udev *udev = udev_new();
-    struct libinput *li;
-    struct libinput_event *event;
-    int ret = -1;
+static input_dev s_kbd = {
+    .hidapi = NULL,
+    .vid = 0x0951,
+    .pid = 0x16d2,
+    .interface_number = 0,
+    .dev = {
+        .report_length = 8,
+        .type = HID_DEV_KEYBOARD,
+        .kbd = {
+            .ctrl_btn = {
+                .physical_minimum = 0xe0,
+                .physical_maximum = 0xe7,
+                .logical_minimum = 0,
+                .logical_maximum = 1,
+                .size = 1,
+                .count = 8,
+                .report_buffer_offset = 0
+            },
+            .led = {
+                .physical_minimum = 0x01,
+                .physical_maximum = 0x05,
+                .logical_minimum = 0,
+                .logical_maximum = 1,
+                .size = 8,
+                .count = 1,
+                .report_buffer_offset = 1
+            },
+            .key = {
+                .physical_minimum = 0x00,
+                .physical_maximum = 0xFF,
+                .logical_minimum = 0,
+                .logical_maximum = 255,
+                .size = 8,
+                .count = 6,
+                .report_buffer_offset = 2
+            }
+        }
+    }
+};
 
-    li = libinput_udev_create_context(&s_interface, NULL, udev);
-    if (!li) {
-        fprintf(stderr, "libinput_udev_create_context failed\n");
-        udev_unref(udev);
-        return -1;
-    }
-    ret = libinput_udev_assign_seat(li, SEAT_ID);
-    if (ret < 0) {
-        fprintf(stderr, "libinput_udev_assign_seat(id=%s) failed, ret=%d\n", SEAT_ID, ret);
-        return -1;
-    }
+int input_event_loop(void)
+{
+    input_dev *devs[2] = {&s_mouse, &s_kbd};
+    int i = 0;
     
     while (1) {
-        enum libinput_event_type type = LIBINPUT_EVENT_NONE;
-        libinput_dispatch(li);
-        event = libinput_get_event(li);
-        if (!event) {
-            continue;
+        if (!devs[i]->hidapi) {
+            goto next;
         }
-        type = libinput_event_get_type(event);
-        
-        if (type == LIBINPUT_EVENT_POINTER_MOTION ||
-                type == LIBINPUT_EVENT_POINTER_BUTTON) {
-            struct libinput_event_pointer *ev = libinput_event_get_pointer_event(event);
-            if (handlers.mouse_ev_cb) {
-                handlers.mouse_ev_cb(ev, type);
-            }
-        }
-        if (type == LIBINPUT_EVENT_KEYBOARD_KEY) {
-            struct libinput_event_keyboard *ev = libinput_event_get_keyboard_event(event);
-            if (handlers.keyboard_ev_cb) {
-                handlers.keyboard_ev_cb(ev, type);
-            }
+        int ret = hid_read_timeout(devs[i]->hidapi,
+            (unsigned char *)devs[i]->dev.report_buffer,
+            devs[i]->dev.report_length,
+            0);
+        if (ret < 0) {
+            log_err("hid read failed, pvid=%04x:%04x type=%d, ret=%d",
+                devs[i]->vid, devs[i]->pid, devs[i]->dev.type, ret);
+            return -1;
         }
 
-        libinput_event_destroy(event);
+        log_debug("read report idx=%d, actual_len=%d, report_length=%d",
+            i, ret, devs[i]->dev.report_length);
+
+        s_cb(s_user_data, &devs[i]->dev, !!ret);
+
+        if (ret > 0) {
+            memcpy(devs[i]->dev.report_buffer_last, 
+                devs[i]->dev.report_buffer,
+                devs[i]->dev.report_length);
+        }
+
+    next:
+        i++;
+        if (i >= 2) {
+            i = 0;
+        }
     }
- 
-    libinput_unref(li);
-    udev_unref(udev);
     return 0;
+}
+
+void input_set_handle(input_event_cb cb, void *user_data)
+{
+    s_cb = cb;
+    s_user_data = user_data;
+}
+
+int input_open(void)
+{
+    int ret;
+    int find_cnt = 0;
+    struct hid_device_info *root;
+    struct hid_device_info *cur;
+
+    ret = hid_init();
+    if (ret < 0) {
+        log_err("hid init failed, ret=%d", ret);
+        return -1;
+    }
+
+    root = hid_enumerate(0, 0);
+    if (!root) {
+        log_err("hid enumerate failed, no device\n");
+        hid_exit();
+        return -1;
+    }
+
+    cur = root;
+    while (cur) {
+        log_info("path=%s, bus_type=%d, pvid=%04x:%04x, interface_number=%d, usage=%d, usage_page=%d\n",
+            cur->path, cur->bus_type,
+            cur->vendor_id, cur->product_id,
+            cur->interface_number,
+            cur->usage, cur->usage_page);
+        if (!IS_EXPECT_DEV(cur, &s_mouse) &&
+            !IS_EXPECT_DEV(cur, &s_kbd)) {
+            goto next;
+        }
+
+        hid_device *dev = hid_open_path(cur->path);
+        if (!dev) {
+            log_err("hid open failed, path=%s\n", cur->path);
+            return -1;
+        }
+        if (IS_EXPECT_DEV(cur, &s_mouse)) {
+            log_err("open mouse success, path=%s\n", cur->path);
+            s_mouse.hidapi = dev;
+        }
+        if (IS_EXPECT_DEV(cur, &s_kbd)) {
+            log_err("open keyboard success, path=%s\n", cur->path);
+            s_kbd.hidapi = dev;
+        }
+        find_cnt++;
+    next:
+        cur = cur->next;
+    };
+
+    hid_free_enumeration(root);
+
+    if (find_cnt != 2) {
+        hid_close(s_mouse.hidapi);
+        hid_close(s_kbd.hidapi);
+        s_mouse.hidapi = NULL;
+        s_kbd.hidapi = NULL;
+        log_err("find cnt = %d", find_cnt);
+        return -1;
+    }
+
+    return 0;
+}
+
+void input_close(void)
+{
+    hid_close(s_mouse.hidapi);
+    hid_close(s_kbd.hidapi);
+    s_mouse.hidapi = NULL;
+    s_kbd.hidapi = NULL;
+    hid_exit();
 }

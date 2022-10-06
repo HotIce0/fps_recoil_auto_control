@@ -1,64 +1,50 @@
 #include <stdio.h>
 #include <assert.h>
 
+#include "log.h"
 #include "input.h"
 #include "output.h"
+#include "auto_gun_press.h"
 
-
-static void mouse_event_cb(struct libinput_event_pointer *event, enum libinput_event_type type)
+void input_event_callback(void *user_data, hid_dev *dev, int has_data)
 {
-    if (type == LIBINPUT_EVENT_POINTER_MOTION) {
-        int dx = (int)libinput_event_pointer_get_dx_unaccelerated(event);
-        int dy = (int)libinput_event_pointer_get_dy_unaccelerated(event);
-        // printf("move dx=%d, dy=%d\n", dx, dy);
-        output_mouse_move(dx, dy);
-        // TODO fix motion leak
-
-    } else if (type == LIBINPUT_EVENT_POINTER_BUTTON) {
-        printf("btn %d, pressed=%d\n", 
-            (int)libinput_event_pointer_get_button(event),
-            (int)libinput_event_pointer_get_button_state(event)
-        );
-
+    int ret;
+    if (dev->type == HID_DEV_MOUSE) {
+        ret = agp_mouse_event_callback(user_data, dev, has_data);
     } else {
-        assert(!"not expect");
+        ret = agp_kbd_event_callback(user_data, dev, has_data);
+    }
+    if (ret) {
+        output_send_report(dev);
     }
 }
-
-static void kbd_event_cb(struct libinput_event_keyboard *event, enum libinput_event_type type)
-{
-    if (type != LIBINPUT_EVENT_KEYBOARD_KEY) {
-        assert(!"not expect");
-    }
-    printf("key %d, pressed=%d\n", 
-        (int)libinput_event_keyboard_get_key(event),
-        (int)libinput_event_keyboard_get_key_state(event)
-    );
-}
-
-static const input_event_handlers s_handlers = {
-    .mouse_ev_cb = mouse_event_cb,
-    .keyboard_ev_cb = kbd_event_cb
-};
 
 int main(void)
 {
     int ret = -1;
 
+    ret = input_open();
+    if (ret < 0) {
+        log_err("input_open failed, ret=%d", ret);
+        goto out;
+    }
     ret = output_open();
     if (ret < 0) {
-        fprintf(stderr, "output_open failed, ret=%d\n", ret);
-        return -1;
+        log_err("output_open failed, ret=%d", ret);
+        goto out;
     }
-
-    // TODO hotkey to break the loop
-    ret = input_event_handle_loop(s_handlers);
+    ret = agp_init();
     if (ret < 0) {
-        fprintf(stderr, "input_event_handle_loop failed, ret=%d\n", ret);
-        output_close();
-        return -1;
+        log_err("agp_init failed, ret=%d", ret);
+        goto out;
     }
 
+    input_set_handle(input_event_callback, NULL);
+    input_event_loop();
+
+out:
+    agp_exit();
     output_close();
+    input_close();
     return 0;
 }

@@ -1,18 +1,10 @@
-#include <libinput.h>
+#include "hid.h"
 
-typedef struct input_event_handlers {
-    /**
-     * @brief 
-     * @param type options, LIBINPUT_EVENT_POINTER_MOTION
-     *                      LIBINPUT_EVENT_POINTER_BUTTON
-     */
-    void (*mouse_ev_cb)(struct libinput_event_pointer *event, enum libinput_event_type type);
+typedef void (*input_event_cb)(void *user_data, hid_dev *dev, int has_data);
 
-    /**
-     * @brief 
-     * @param type options, LIBINPUT_EVENT_KEYBOARD_KEY
-     */
-    void (*keyboard_ev_cb)(struct libinput_event_keyboard *event, enum libinput_event_type type);
-} input_event_handlers;
 
-int input_event_handle_loop(input_event_handlers handlers);
+int input_open(void);
+void input_close(void);
+
+void input_set_handle(input_event_cb cb, void *user_data);
+int input_event_loop(void);

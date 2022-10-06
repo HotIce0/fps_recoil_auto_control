@@ -1,3 +1,6 @@
+#ifndef __BSWAP_H__
+#define __BSWAP_H__
+
 #include <stdint.h>
 
 static inline uint16_t bswap16(uint16_t x)
@@ -57,3 +60,5 @@ static inline uint64_t bswap64(uint64_t x)
 #define cpu_to_be64(x) bswap64(x)
 
 #endif /* HOST_WORDS_BIGENDIAN */
+
+#endif // __BSWAP_H__
